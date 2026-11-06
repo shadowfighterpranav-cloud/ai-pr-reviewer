@@ -1,0 +1,28 @@
+{
+  "name": "ai-pr-reviewer",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shadowfighterpranav-cloud/ai-pr-reviewer.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/shadowfighterpranav-cloud/ai-pr-reviewer/issues"
+  },
+  "homepage": "https://github.com/shadowfighterpranav-cloud/ai-pr-reviewer#readme",
+  "dependencies": {
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

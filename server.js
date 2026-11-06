@@ -11,7 +11,7 @@ const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-app.post("/test", (req, res) => {
+app.get("/test", (req, res) => {
   res.status(200).json({
     status: "success",
     message: "Test route working fine",

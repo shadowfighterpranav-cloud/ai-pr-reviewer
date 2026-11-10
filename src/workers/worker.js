@@ -1,5 +1,8 @@
 const { Worker } = require("bullmq");
 const axios = require("axios");
+const Groq = require("groq-sdk");
+
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const webhookWorker = new Worker(
   "github-webhooks",
@@ -25,17 +28,68 @@ const webhookWorker = new Worker(
           },
         },
       );
+      let codeChangesSummary = "";
       for (const file of fileResponse.data) {
         console.log(`-- File: ${file.filename} (${file.status}) ---`);
         if (file.patch) {
-          console.log(file.patch);
-        } else {
-          console.log(
-            "(No patch available for this file, possibly a binary file or too large)",
-          );
+          codeChangesSummary += `\n### File: ${file.filename} (${file.status})\n \`\`\`diff\n${file.patch}\n\`\`\`\n`;
         }
       }
-      // TODO: Send this 'prDiff' to your AI model for review and get the response
+      if (!codeChangesSummary) {
+        console.log("No code changes found in the PR.");
+        return;
+      }
+      console.log(
+        "Sending the following code changes summary to the AI model for review:",
+      );
+      const aiResponse = await groq.chat.completions.create({
+        model: "openai/gpt-oss-20b",
+        messages: [
+          {
+            role: "system",
+            content: `You are an expert senior software engineer. Review the following code changes provided by the user and provide a detailed review, including potential issues, bugs, improvements, and best practices. Give the response back STRICTLY as a valid JSON array of objects. Do not respond with an filler or introductory text, code explanations or any markdown code fences like \`\`\`json. Just give back the valid JSON response. Strictly use the following format given below for the JSON response.
+            JSON response format:
+            [
+              {
+                "file": "filename" (e.g., "path/to/file.js"),
+                "line": line_number (e.g., 42), 
+                "comment" : "Your review comment here"
+              }
+            ]            
+            `,
+          },
+          {
+            role: "user",
+            content: codeChangesSummary,
+          },
+        ],
+      });
+      const rawAiFeedback = aiResponse.choices[0].message.content;
+      const cleanedJson = rawAiFeedback
+        .replace(/```json/g, "")
+        .replace(/```/g, "")
+        .trim();
+      const aiFeedbackArray = JSON.parse(cleanedJson);
+      let formattedComment = "AI code review feedback:\n\n";
+      for (const feedback of aiFeedbackArray) {
+        formattedComment += `File: ${feedback.file}, Line: ${feedback.line}\nComment: ${feedback.comment}\n\n`;
+      }
+      console.log(
+        `AI code review generated successfully. Sending feedback back to GitHub for PR #${prNumber}...`,
+      );
+      await axios.post(
+        `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`,
+        {
+          body: formattedComment,
+        },
+        {
+          headers: {
+            Authorization: `token ${process.env.GITHUB_TOKEN}`,
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+        },
+      );
+      console.log(`Feedback posted successfully to PR #${prNumber}.`);
     } catch (error) {
       console.error(
         `Error fetching PR diff from GitHub:`,

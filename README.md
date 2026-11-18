@@ -38,6 +38,7 @@ Before running the project locally, ensure you have the following installed:
 git clone [https://github.com/your-username/your-repo-name.git](https://github.com/your-username/your-repo-name.git)
 cd your-repo-name
 npm install express dotenv bullmq ioredis axios groq-sdk
+npm install -D nodemon
 ```
 
 ### 2. Local Redis Setup (Windows via WSL2)
@@ -63,14 +64,14 @@ This project uses Redis and BullMQ for background job processing. If you are on 
 To fetch file diffs and post inline review comments, the worker needs scoped API access:
 1. Go to GitHub **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**.
 2. Click **Generate new token**, name it (e.g., `ai-pr-reviewer-local`), and set an expiration.
-3. Under **Repository access**, select **Only select repositories** and choose your target repository.
+3. Under **Repository access**, select **Only select repositories** and choose your target sandbox repository.
 4. Under **Repository permissions**, configure:
-   * **Pull requests:** `Read and write` (required to fetch diffs and post inline review comments)
-   * **Contents:** `Read-only` (required to read file structures)
-5. Generate and copy the token.
+   - **Pull requests:** `Read and write` *(Required—`Read-only` will allow fetching diffs, but posting inline review comments will fail)*
+   - **Contents:** `Read-only` *(Required to read file structures)*
+5. Generate and copy the token (starts with `github_pat_...`).
 
 ### 4. Configure Environment Variables
-Create a `.env` file in the root of your project and add the following:
+Create a `config.env` file in the root of your project and add the following:
 
 ```env
 PORT=3000
@@ -78,6 +79,11 @@ GITHUB_WEBHOOK_SECRET=your_custom_webhook_secret
 GITHUB_TOKEN=github_pat_your_generated_token_here
 GROQ_API_KEY=gsk_your_groq_api_key_here
 ```
+
+> **Important Note on `dotenv` Paths:** Because the worker runs from a nested folder (`src/workers/worker.js`), make sure your `dotenv` configuration at the very top of both `src/server.js` and `src/workers/worker.js` explicitly points to `config.env` in the root directory:
+> ```javascript
+> require('dotenv').config({ path: './config.env' });
+> ```
 
 ---
 
@@ -91,7 +97,7 @@ By default, router firewalls block unsolicited incoming traffic. Manually openin
    ```bash
    ngrok config add-authtoken YOUR_COPIED_AUTHTOKEN
    ```
-2. Start an HTTP tunnel pointing to your Express port (e.g., `3000`):
+2. Start an HTTP tunnel pointing to your Express port (`3000`):
    ```bash
    ngrok http 3000
    ```
@@ -101,31 +107,96 @@ By default, router firewalls block unsolicited incoming traffic. Manually openin
 1. Open your target GitHub repository and go to **Settings** → **Webhooks** → **Add webhook**.
 2. **Payload URL:** Paste your ngrok URL followed by your webhook route (e.g., `https://your-id.ngrok-free.app/webhook`).
 3. **Content type:** Select `application/json`.
-4. **Secret:** Enter the exact same string you set for `GITHUB_WEBHOOK_SECRET` in your `.env` file.
+4. **Secret:** Enter the exact same string you set for `GITHUB_WEBHOOK_SECRET` in your `config.env` file.
 5. **Events:** Choose **Let me select individual events**, uncheck *Pushes*, and check **Pull requests**.
 6. Click **Add webhook**.
 
 ---
 
-## 🚀 Running the Application
+## 🚀 Running the Application (4-Terminal Workflow)
 
-You need two terminal processes running alongside Redis:
+To run the complete pipeline locally, keep these four terminals running side-by-side:
 
-**Terminal 1 — Start the Express Webhook Server:**
+**Terminal 1 — WSL2 Ubuntu (Redis Server):**
 ```bash
-node src/server.js
+sudo service redis-server start
+redis-cli ping # Should return PONG
 ```
 
-**Terminal 2 — Start the BullMQ Background Worker:**
+**Terminal 2 — Express Webhook Server:**
 ```bash
-node src/workers/worker.js
+nodemon src/server.js
 ```
 
-Open a Pull Request (or push a new commit to an existing PR) in your connected repository to watch the worker process the diff and post inline review comments.
+**Terminal 3 — BullMQ Background Worker:**
+```bash
+nodemon src/workers/worker.js
+```
+
+**Terminal 4 — ngrok Tunnel:**
+```bash
+ngrok http 3000
+```
+
+---
+
+## 🧪 Testing End-to-End with a Sandbox Repository
+
+To test your pipeline safely without cluttering a real codebase, create an empty test repository on GitHub (e.g., `webhook-sandbox`) and connect your webhook to it.
+
+### 1. Initialize the Sandbox Repo (Windows PowerShell)
+Create a local folder for your test repo and push an initial empty commit to `main` so your branches share a common commit history:
+```powershell
+mkdir webhook-sandbox
+cd webhook-sandbox
+git init
+git branch -M main
+git remote add origin [https://github.com/your-username/webhook-sandbox.git](https://github.com/your-username/webhook-sandbox.git)
+git commit --allow-empty -m "Initial commit"
+git push -u origin main
+```
+
+### 2. Create a Feature Branch with Intentional Bugs
+Create a new branch from `main` and add a file containing intentional issues (such as a hardcoded secret and a division-by-zero bug):
+```powershell
+git checkout -b test-ai-review
+
+Set-Content -Path "review-test.js" -Value @"
+const apiKey = "gsk_fake_hardcoded_secret_token_9999"; // Intentional security flaw
+
+function divideNumbers(a, b) {
+  // Intentional missing check for division by zero
+  return a / b;
+}
+
+module.exports = { divideNumbers };
+"@
+
+git add review-test.js
+git commit -m "Add test file with intentional bugs for AI review"
+git push -u origin test-ai-review
+```
+
+### 3. Open the Pull Request
+1. Go to your `webhook-sandbox` repository on GitHub and click **Compare & pull request** → **Create pull request**.
+2. Watch **Terminal 2** catch the webhook, **Terminal 3** process the diff via Groq, and refresh the **Files changed** tab on your Pull Request to see the inline AI review comments appear on your code.
+
+---
+
+## 🩺 Common Troubleshooting
+
+- **`401 Bad credentials` in the Worker Terminal:**
+  - Ensure your `config.env` file has no trailing spaces around `GITHUB_TOKEN`.
+  - Verify that `require('dotenv').config({ path: './config.env' });` is on **Line 1** of `src/workers/worker.js` before any other `require` statements.
+  - Note that `nodemon` watches `.js` files by default, not `.env` files—if you update `config.env`, manually restart the worker (`Ctrl + C`, then run `nodemon src/workers/worker.js` again).
+- **GitHub shows *"There isn't anything to compare"* when creating a PR:**
+  - This occurs if `main` and your feature branch were created without a shared ancestor commit (e.g., after deleting `.git`). Fix it by fetching `origin/main` first (`git fetch origin main && git checkout -b main origin/main`) and creating your feature branch from there.
+- **PowerShell `rm -rf` parameter error:**
+  - Windows PowerShell aliases `rm` to `Remove-Item`, which does not accept `-rf`. Use `Remove-Item -Recurse -Force <folder>` instead.
 
 ---
 
 ## 🔒 Security & Resilience Design Notes
 
-* **Timing Attack Prevention (`crypto.timingSafeEqual`):** Standard string comparisons (`===`) exit early on the first mismatched character, leaking microsecond timing clues that attackers can exploit to brute-force HMAC signatures byte-by-byte. Using `crypto.timingSafeEqual` enforces constant-time comparison across the entire buffer regardless of where a mismatch occurs.
-* **Fault-Isolated Inline Posting:** Each inline review comment is posted inside its own `try/catch` block. If the AI references a line number outside the active diff hunk (causing GitHub to return a `422 Unprocessable Entity`), the worker logs a warning and continues posting the remaining valid comments rather than crashing the job.
+- **Timing Attack Prevention (`crypto.timingSafeEqual`):** Standard string comparisons (`===`) exit early on the first mismatched character, leaking microsecond timing clues that attackers can exploit to brute-force HMAC signatures byte-by-byte. Using `crypto.timingSafeEqual` enforces constant-time comparison across the entire buffer regardless of where a mismatch occurs.
+- **Fault-Isolated Inline Posting:** Each inline review comment is posted inside its own `try/catch` block. If the AI references a line number outside the active diff hunk (causing GitHub to return a `422 Unprocessable Entity`), the worker logs a warning and continues posting the remaining valid comments rather than crashing the job.
